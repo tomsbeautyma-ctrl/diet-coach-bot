@@ -45,3 +45,19 @@ app.post("/line/webhook", lineMiddleware(lineConfig), async (req, res) => {
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server started on port", process.env.PORT || 3000);
 });
+// ---- DeepInfra単体テスト用（ブラウザで叩ける）----
+app.get("/test/ai", async (_, res) => {
+  try {
+    const r = await ai.chat.completions.create({
+      model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
+      messages: [{ role: "user", content: "これは接続テストです。1行で返して。" }],
+      max_tokens: 60,
+    });
+    res.json({ ok: true, text: r.choices?.[0]?.message?.content || "" });
+  } catch (e) {
+    console.error("❌ /test/ai error:", e);
+    res.status(500).json({ ok: false, name: e.name, message: e.message });
+  }
+});
+
+
