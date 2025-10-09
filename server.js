@@ -42,9 +42,6 @@ app.post("/line/webhook", lineMiddleware(lineConfig), async (req, res) => {
   res.status(200).end();
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server started on port", process.env.PORT || 3000);
-});
 // ---- DeepInfra単体テスト用（ブラウザで叩ける）----
 app.get("/test/ai", async (_, res) => {
   try {
@@ -61,3 +58,9 @@ app.get("/test/ai", async (_, res) => {
 });
 
 
+
+
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🚀 Server started on port", process.env.PORT || 3000);
+});
