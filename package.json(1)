@@ -1,0 +1,15 @@
+{
+  "name": "diet-coach-bot",
+  "version": "1.0.0",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^9.0.0",
+    "express": "^4.18.2",
+    "openai": "^4.56.0",
+    "dotenv": "^16.4.5"
+  }
+}
