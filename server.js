@@ -1,56 +1,85 @@
 // server.js — ESM ("type": "module")
-// 依存: express, @line/bot-sdk, openai
+// deps: express, @line/bot-sdk, openai
 
 import express from "express";
 import { Client, middleware as lineMW } from "@line/bot-sdk";
 import OpenAI from "openai";
 
-const PORT = process.env.PORT || 10000;
+const PORT = Number(process.env.PORT || 10000);
 
-// ------------------------ 基本セットアップ ------------------------
-const app = express();
-// ※LINE署名検証のため、グローバルの express.json() は入れない
+// ====== グローバル例外ハンドラ（原因を必ずログ） ======
+process.on("uncaughtException", (err) => {
+  console.error("🔥 uncaughtException:", err);
+});
+process.on("unhandledRejection", (reason, p) => {
+  console.error("🔥 unhandledRejection at:", p, "reason:", reason);
+});
 
-// Health checks
+console.log("🟢 Booting server...");
+console.log("ENV CHECK:", {
+  PORT,
+  HAS_LINE_ACCESS_TOKEN: Boolean(process.env.LINE_CHANNEL_ACCESS_TOKEN),
+  HAS_LINE_SECRET: Boolean(process.env.LINE_CHANNEL_SECRET),
+  HAS_OPENAI_KEY: Boolean(process.env.OPENAI_API_KEY),
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+});
+
+// ====== App ======
+const app = express(); // ※ express.json() は付けない（LINE署名のため）
+
+// Health
 app.get("/", (_req, res) => res.status(200).send("alive"));
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-// LINE SDK
-const lineConfig = {
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.LINE_CHANNEL_SECRET,
-};
-const lineClient = new Client(lineConfig);
+// ====== Safe init: LINE / OpenAI を try-catch で ======
+let lineClient;
+let lineConfig;
+try {
+  lineConfig = {
+    channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || "",
+    channelSecret: process.env.LINE_CHANNEL_SECRET || "",
+  };
+  lineClient = new Client(lineConfig);
+  console.log("✅ LINE SDK initialized");
+} catch (e) {
+  console.error("❌ LINE SDK init failed:", e);
+}
 
-// DeepInfra (OpenAI互換)
-const ai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,         // DeepInfraのAPIキー (hf_...)
-  baseURL: process.env.OPENAI_BASE_URL,       // 例: https://api.deepinfra.com/v1/openai
-});
+let ai;
+try {
+  ai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY || "",
+    baseURL: process.env.OPENAI_BASE_URL, // 例: https://api.deepinfra.com/v1/openai
+  });
+  console.log("✅ OpenAI(DeepInfra) client initialized");
+} catch (e) {
+  console.error("❌ OpenAI client init failed:", e);
+}
 
-// デバッグ用：GETで疎通確認
-app.get("/webhook/line", (_req, res) => {
-  res.status(200).send("LINE webhook endpoint is alive (POST required).");
-});
+// Debug GET
+app.get("/webhook/line", (_req, res) =>
+  res.status(200).send("LINE webhook endpoint is alive (POST required).")
+);
 
-// ------------------------ 画像取得ヘルパ ------------------------
+// 画像取得ヘルパ
 async function fetchLineImageBuffer(messageId) {
-  const stream = await lineClient.getMessageContent(messageId); // Readable
+  const stream = await lineClient.getMessageContent(messageId);
   const chunks = [];
   for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks);
 }
 
-// ------------------------ Webhook (POST) ------------------------
+// Webhook
 app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
   try {
     const events = req.body?.events || [];
+    console.log(`📩 Received ${events.length} events`);
 
     await Promise.all(
       events.map(async (event) => {
         if (event.type !== "message") return;
 
-        // ========== 画像診断 ==========
+        // 画像
         if (event.message.type === "image") {
           try {
             const buf = await fetchLineImageBuffer(event.message.id);
@@ -62,9 +91,9 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
                 {
                   role: "system",
                   content:
-                    "あなたは日本語で答える骨格診断の専門アシスタントです。"
+                    "あなたは日本語で答える骨格診断アシスタントです。"
                     + "写真からストレート/ウェーブ/ナチュラルの傾向(%)を推定し、"
-                    + "特徴、似合うシルエットと素材、避けたい例を簡潔に3〜6行で答えてください。"
+                    + "特徴・似合うシルエット/素材・避けたい例を3〜6行で。",
                 },
                 {
                   role: "user",
@@ -80,8 +109,7 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
 
             const reply =
               result?.choices?.[0]?.message?.content?.trim() ||
-              "画像をうまく解析できませんでした。もう一度明るいところで撮影して送ってください📸";
-
+              "画像を解析できませんでした。もう一度お試しください。";
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
               text: reply,
@@ -90,23 +118,21 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
             console.error("Vision error:", e);
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
-              text: "画像の取得/解析でエラーが起きました。もう一度お試しください🙏",
+              text: "画像の取得/解析でエラーが起きました。もう一度お願いします🙏",
             });
           }
-          return; // 画像処理はここで終了
+          return;
         }
 
-        // ========== テキスト応答 ==========
+        // テキスト
         if (event.message.type === "text") {
           const userText = (event.message.text || "").trim();
-
           const result = await ai.chat.completions.create({
             model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
             messages: [
               {
                 role: "system",
-                content:
-                  "You are a supportive Japanese fitness & styling assistant.",
+                content: "You are a supportive Japanese fitness & styling assistant.",
               },
               { role: "user", content: userText },
             ],
@@ -117,7 +143,6 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
           const reply =
             result?.choices?.[0]?.message?.content?.trim() ||
             "うまく生成できませんでした。もう一度お願いします。";
-
           await lineClient.replyMessage(event.replyToken, {
             type: "text",
             text: reply,
@@ -126,26 +151,15 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
       })
     );
 
-    // 必ず 200 を返す（LINEの再送を避ける）
     res.status(200).end();
   } catch (err) {
     console.error("Webhook error:", err);
-    res.status(200).end();
+    res.status(200).end(); // 再送防止
   }
 });
 
-// ------------------------ 単体テスト用 ------------------------
-app.get("/test/ai", async (_req, res) => {
-  try {
-    const r = await ai.chat.completions.create({
-      model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
-      messages: [{ role: "user", content: "接続テスト。1行で返答して。" }],
-      max_tokens: 40,
-    });
-    res.json({ ok: true, text: r.choices?.[0]?.message?.content ?? "" });
-  } catch (e) {
-    console.error("❌ /test/ai error:", e);
-    res.status(500).json({ ok: false, name: e.name, message: e.message });
-  }
+// Listen
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Server started on port ${PORT}`);
 });
-
+server.on("error", (e) => console.error("❌ server error:", e));
