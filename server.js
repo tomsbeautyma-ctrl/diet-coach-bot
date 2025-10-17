@@ -42,6 +42,87 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
 
     await Promise.all(
       events.map(async (event) => {
+        if (event.type !== "message") return;
+
+        // 🖼️ 画像が送られた場合
+        if (event.message.type === "image") {
+          try {
+            const stream = await lineClient.getMessageContent(event.message.id);
+            const chunks = [];
+            for await (const chunk of stream) chunks.push(chunk);
+            const buffer = Buffer.concat(chunks);
+
+            // 画像をVisionモデルに送る（DeepInfra）
+            const aiRes = await ai.chat.completions.create({
+              model: "meta-llama/Meta-Llama-3.2-90B-Vision-Instruct",
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "あなたは日本語で答える骨格診断AIアドバイザーです。画像をもとに、骨格タイプを（ストレート・ナチュラル・ウェーブ）から判定し、特徴と似合う服装・注意点を簡潔に伝えてください。",
+                },
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: "この人の骨格タイプを診断してください。" },
+                    { type: "image_url", image_url: "data:image/jpeg;base64," + buffer.toString("base64") },
+                  ],
+                },
+              ],
+              max_tokens: 500,
+            });
+
+            const replyText = aiRes.choices[0].message.content.trim();
+            await lineClient.replyMessage(event.replyToken, {
+              type: "text",
+              text: replyText,
+            });
+          } catch (e) {
+            console.error("Vision error:", e);
+            await lineClient.replyMessage(event.replyToken, {
+              type: "text",
+              text: "画像を分析できませんでした。もう一度明るい環境で撮影して送ってみてください📸",
+            });
+          }
+          return;
+        }
+
+        // 🗣️ テキスト処理（既存部分）
+        if (event.message.type === "text") {
+          const userText = (event.message.text || "").trim();
+          const aiRes = await ai.chat.completions.create({
+            model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            messages: [
+              {
+                role: "system",
+                content: "You are a supportive Japanese fitness & styling assistant.",
+              },
+              { role: "user", content: userText },
+            ],
+            temperature: 0.4,
+            max_tokens: 500,
+          });
+
+          const reply =
+            aiRes?.choices?.[0]?.message?.content?.trim() ||
+            "うまく生成できませんでした。もう一度お願いします。";
+
+          await lineClient.replyMessage(event.replyToken, [
+            { type: "text", text: reply },
+          ]);
+        }
+      })
+    );
+
+    res.status(200).end();
+  } catch (err) {
+    console.error("Webhook error:", err);
+    res.status(200).end();
+  }
+});
+
+    await Promise.all(
+      events.map(async (event) => {
         if (event.type !== "message" || event.message.type !== "text") return;
 
         const userText = (event.message.text || "").trim();
@@ -99,3 +180,4 @@ app.get("/test/ai", async (_req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server started on port ${PORT}`);
 });
+
