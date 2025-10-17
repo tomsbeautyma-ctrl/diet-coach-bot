@@ -1,15 +1,15 @@
-// server.js  —— CommonJS版（ESMは使いません）
+// server.js  —— ESM 版（"type": "module" 前提）
 
-const express = require("express");
-const { Client, middleware: lineMW } = require("@line/bot-sdk");
-const OpenAI = require("openai"); // DeepInfra(OpenAI互換)SDK
+import express from "express";
+import { Client, middleware as lineMW } from "@line/bot-sdk";
+import OpenAI from "openai";
 
 const PORT = process.env.PORT || 10000;
 
 // ====== App ======
 const app = express();
-// ※ グローバルの app.use(express.json()) は入れない
-//    （LINE署名検証に raw body が必要なため。必要なら別ルートで個別に付けてください）
+// ※ グローバルに app.use(express.json()) は入れないでOK
+//    （LINEの署名検証に raw body が必要。lineMW が面倒見ます）
 
 // ====== Health & Ping ======
 app.get("/", (_req, res) => res.status(200).send("alive"));
@@ -24,29 +24,29 @@ const lineClient = new Client(lineConfig);
 
 // ====== OpenAI(DeepInfra) 設定 ======
 const ai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,       // DeepInfraのAPIキー
-  baseURL: process.env.OPENAI_BASE_URL,     // https://api.deepinfra.com/v1/openai
+  apiKey: process.env.OPENAI_API_KEY,       // DeepInfra の API キー
+  baseURL: process.env.OPENAI_BASE_URL,     // 例: https://api.deepinfra.com/v1/openai
 });
 
-// ====== デバッグ用: GETでも生存確認ができるようにする ======
+// ====== デバッグ用（GET でも生存確認できる） ======
 app.get("/webhook/line", (_req, res) => {
   res
     .status(200)
     .send("LINE webhook endpoint is alive (POST from LINE required).");
 });
 
-// ====== 本番: LINE Webhook (POST専用) ======
+// ====== 本番: LINE Webhook (POST) ======
 app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
   try {
     const events = req.body?.events || [];
-    // すべてのイベントを処理（最低限の実装）
+
     await Promise.all(
       events.map(async (event) => {
         if (event.type !== "message" || event.message.type !== "text") return;
 
         const userText = (event.message.text || "").trim();
 
-        // ここでDeepInfraに質問（必要ならモデル名を軽いものへ）
+        // DeepInfra (OpenAI 互換) に投げる
         const aiRes = await ai.chat.completions.create({
           model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
           messages: [
@@ -63,7 +63,7 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
 
         const reply =
           aiRes?.choices?.[0]?.message?.content?.trim() ||
-          "うまく考えがまとまりませんでした。もう一度お願いします。";
+          "うまく生成できませんでした。もう一度お願いします。";
 
         await lineClient.replyMessage(event.replyToken, [
           { type: "text", text: reply },
@@ -71,21 +71,21 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
       })
     );
 
-    // ★必ず200を返す（LINE側はこれを期待）
+    // ★必ず200を返す（LINEはこれを期待）
     res.status(200).end();
   } catch (err) {
     console.error("Webhook error:", err);
-    // 署名エラーなどでも200を返すのが無難（LINEの再送を防ぐ）
+    // 署名エラー等でも 200 を返し、LINE の再送を避ける
     res.status(200).end();
   }
 });
 
-// ====== DeepInfra 単体テスト用（GETでOK） ======
+// ====== DeepInfra 単体テスト用 ======
 app.get("/test/ai", async (_req, res) => {
   try {
     const r = await ai.chat.completions.create({
       model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
-      messages: [{ role: "user", content: "接続テストです。1行で返答して。" }],
+      messages: [{ role: "user", content: "接続テスト。1行で返答して。" }],
       max_tokens: 40,
     });
     res.json({ ok: true, text: r.choices?.[0]?.message?.content || "" });
