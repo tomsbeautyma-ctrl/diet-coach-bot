@@ -139,4 +139,13 @@ app.get("/test/ai", async (_req, res) => {
   try {
     const r = await ai.chat.completions.create({
       model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
-      messages: [{ role: "user", content: "接続テスト。1行]()
+      messages: [{ role: "user", content: "接続テスト。1行で返答して。" }],
+      max_tokens: 40,
+    });
+    res.json({ ok: true, text: r.choices?.[0]?.message?.content ?? "" });
+  } catch (e) {
+    console.error("❌ /test/ai error:", e);
+    res.status(500).json({ ok: false, name: e.name, message: e.message });
+  }
+});
+
