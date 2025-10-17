@@ -56,11 +56,6 @@ app.get("/test/ai", async (_, res) => {
     res.status(500).json({ ok: false, name: e.name, message: e.message });
   }
 });
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server started on port", process.env.PORT || 3000);
-});
-app.get('/', (_req, res) => res.status(200).send('alive'));
-app.get('/health', (_req, res) => res.status(200).send('ok'));
 // 1) 動作確認用（ブラウザ向け）
 app.get('/', (_req, res) => res.status(200).send('alive'));
 app.get('/health', (_req, res) => res.status(200).send('ok'));
@@ -91,4 +86,11 @@ app.post('/webhook/line', lineMW(lineConfig), async (req, res) => {
   // ★必ず200を返す
   res.status(200).end();
 });
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🚀 Server started on port", process.env.PORT || 3000);
+});
+app.get('/', (_req, res) => res.status(200).send('alive'));
+app.get('/health', (_req, res) => res.status(200).send('ok'));
+
 
