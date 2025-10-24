@@ -84,13 +84,17 @@ async function isActive(userId) {
 }
 
 // ====== LINE Webhook (POST) ======
-app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
-  try {
-    const events = req.body?.events || [];
-    await Promise.all(
-      events.map(async (event) => {
-        if (event.type !== "message") return;
+app.post("/webhook/line", lineMW(lineConfig), (req, res) => {
+  // ① まず即200を返す（LINEの検証タイムアウトを防ぐ）
+  res.status(200).end();
 
+  // ② 以降は非同期で安全に処理
+  (async () => {
+    const events = req.body?.events || [];
+
+    for (const event of events) {
+      try {
+        if (event.type !== "message") continue;
         const userId = event.source?.userId;
 
         // ---- 注文番号の即時登録（9〜10桁の数字を想定）----
@@ -99,15 +103,13 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
           const orderMatch = text.match(/^\d{9,10}$/);
           if (orderMatch) {
             const orderNumber = orderMatch[0];
-            const expireAt = Date.now() + 30 * 86400 * 1000;
+            const expireAt = Date.now() + 30 * 86400 * 1000; // 30日
             await redis.set(`sub:${userId}`, { orderNumber, expireAt }, { ex: 30 * 86400 });
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
-              text: `🔑 注文番号 ${orderNumber} を登録しました。\nご利用期限: ${new Date(
-                expireAt
-              ).toLocaleDateString("ja-JP")}`,
+              text: `🔑 注文番号 ${orderNumber} を登録しました。\nご利用期限: ${new Date(expireAt).toLocaleDateString("ja-JP")}`,
             });
-            return;
+            continue; // このイベントは完了
           }
         }
 
@@ -116,10 +118,9 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
         if (!active) {
           await lineClient.replyMessage(event.replyToken, {
             type: "text",
-            text:
-              "🕒 ご利用期限が切れています。\nSTORESでご購入のうえ、9〜10桁の注文番号を送ってください。",
+            text: "🕒 ご利用期限が切れています。\nSTORESでご購入のうえ、9〜10桁の注文番号を送ってください。",
           });
-          return;
+          continue;
         }
 
         // ---------- 画像：骨格診断 ----------
@@ -134,9 +135,7 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
                 {
                   role: "system",
                   content:
-                    "あなたは日本語で答える骨格診断アシスタントです。"
-                    + "写真からストレート/ウェーブ/ナチュラルの傾向(%)を推定し、"
-                    + "特徴・似合うシルエット/素材・避けたい例を3〜6行で。",
+                    "あなたは日本語で答える骨格診断アシスタントです。写真からストレート/ウェーブ/ナチュラルの傾向(%)を推定し、特徴・似合うシルエット/素材・避けたい例を3〜6行で。",
                 },
                 {
                   role: "user",
@@ -161,16 +160,15 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
               text: "画像の取得/解析でエラーが起きました。もう一度お願いします🙏",
             });
           }
-          return;
+          continue;
         }
 
         // ---------- テキスト：食事診断 or 通常応答 ----------
         if (event.message.type === "text") {
           const userText = (event.message.text || "").trim();
 
-          // 食事レポートっぽいかどうかを簡易判定
-          const isMeal =
-            /ごはん|食べた|朝食|昼食|夕食|晩ごはん|メニュー|食事|ランチ|ディナー/i.test(userText);
+          // 食事レポートかどうかを簡易判定
+          const isMeal = /ごはん|食べた|朝食|昼食|夕食|晩ごはん|メニュー|食事|ランチ|ディナー/i.test(userText);
 
           if (isMeal) {
             const result = await ai.chat.completions.create({
@@ -179,9 +177,7 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
                 {
                   role: "system",
                   content:
-                    "あなたは日本語の栄養士AIです。食事内容から、"
-                    + "①PFCや栄養バランスの所感 ②ざっくりカロリー ③次の食事への改善提案 ④励ましの一言 "
-                    + "を4〜6行で具体的に伝えてください。",
+                    "あなたは日本語の栄養士AIです。食事内容から、①PFCや栄養バランスの所感 ②ざっくりカロリー ③次の食事への改善提案 ④励ましの一言 を4〜6行で具体的に伝えてください。",
                 },
                 { role: "user", content: userText },
               ],
@@ -193,7 +189,7 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
               result?.choices?.[0]?.message?.content?.trim() ||
               "食事内容をうまく解析できませんでした。もう一度お送りください🍎";
             await lineClient.replyMessage(event.replyToken, { type: "text", text: reply });
-            return;
+            continue;
           }
 
           // 通常のサポート
@@ -208,19 +204,17 @@ app.post("/webhook/line", lineMW(lineConfig), async (req, res) => {
           });
 
           const reply =
-            result?.choices?.[0]?.message?.content?.trim() ||
-            "うまく生成できませんでした。もう一度お願いします。";
+            result?.choices?.[0]?.message?.content?.trim() || "うまく生成できませんでした。もう一度お願いします。";
           await lineClient.replyMessage(event.replyToken, { type: "text", text: reply });
         }
-      })
-    );
-
-    res.status(200).end(); // 再送防止
-  } catch (err) {
-    console.error("Webhook error:", err);
-    res.status(200).end();
-  }
+      } catch (err) {
+        console.error("Webhook async error:", err);
+      }
+    }
+  })();
 });
+
 
 // ====== Listen ======
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
